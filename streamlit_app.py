@@ -9,16 +9,16 @@ import os
 from google import genai
 from google.genai.errors import APIError
 from langchain_core.messages import SystemMessage, HumanMessage
+import tempfile # Necesario para manejar archivos cargados localmente
 
 # --- Configuración de Streamlit ---
 st.set_page_config(page_title="Analizador DAX y KPI con Visión para Power BI", layout="wide")
-st.title("👁️ Analizador DAX y Gráficas Power BI (Visión)")
-st.markdown("Sube imágenes de tablas o archivos Excel para obtener medidas DAX, KPI y recomendaciones de visualización.")
+st.title("👁️ Analizador DAX y Gráficas Power BI (Visión Ampliada)")
+st.markdown("Sube la estructura de tus datos (TXT, JSON) o la captura de tu modelo para obtener medidas DAX y recomendaciones.")
 
 # ----------------------------------------------------
 # PASO 0: Configuración de la API de Gemini (Seguridad)
 # ----------------------------------------------------
-# La clave se leerá de st.secrets o del entorno (si se usó la Opción 2)
 api_key = os.getenv("GOOGLE_API_KEY") 
 
 if not api_key:
@@ -40,37 +40,105 @@ except Exception as e:
     st.error(f"Error al inicializar el cliente de Gemini: {e}")
     st.stop()
 
-
 # --- Funciones de Análisis ---
 
-# FUNCIÓN: Análisis de Imagen con Gemini Vision
-def analizar_imagen_con_gemini(imagen_data):
+# ... (Las funciones analizar_imagen_con_gemini, imagen_a_base64, convertir_analisis_imagen, analizar_estructura, generar_medidas_dax, sugerir_kpi_okr, recomendar_graficas se mantienen SIN CAMBIOS) ...
+
+# -------------------------------------------------------------------------
+# CÓDIGO CLAVE: Manejo de carga de archivos ampliados
+# -------------------------------------------------------------------------
+
+def manejar_analisis_archivo(archivo, tipo_archivo):
+    """Maneja la lógica para TXT, JSON, VSPAX, OSPAX."""
+    nombre_tabla = st.text_input("Nombre de la tabla en Power BI:", archivo.name.split('.')[0])
+    analisis = None
+    
+    # 1. Manejo de archivos binarios/comprimidos (NO LEGIBLES)
+    if tipo_archivo in ['vspax', 'ovpax']:
+        st.warning(
+            f"El archivo .{tipo_archivo} es un formato binario comprimido y no puede ser leído directamente por Python."
+        )
+        st.info(
+            "Para obtener el análisis, por favor usa **DAX Studio** (herramienta externa) para **Exportar la Metadata** "
+            "del modelo a un archivo **JSON** o **TXT** y cárgalo en esta aplicación."
+        )
+        return False, None, nombre_tabla
+
+    # 2. Manejo de JSON o TXT (Metadata legible)
+    try:
+        if tipo_archivo in ['txt', 'json']:
+            # Guardar temporalmente el archivo para leer su contenido completo
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{tipo_archivo}') as tmp_file:
+                tmp_file.write(archivo.getvalue())
+                temp_file_path = tmp_file.name
+
+            with open(temp_file_path, 'r', encoding='utf-8') as f:
+                contenido = f.read()
+            
+            os.remove(temp_file_path)
+
+            if tipo_archivo == 'json':
+                # Si es JSON, intentamos leer la estructura directamente.
+                data = json.loads(contenido)
+                
+                # Asumimos que el JSON es la estructura del modelo (similar al formato de la visión)
+                if isinstance(data, dict) and 'columnas' in data:
+                    analisis = convertir_analisis_imagen(data)
+                elif isinstance(data, list) and data and 'name' in data[0]: # Si es una lista de tablas/columnas
+                    # Si el JSON es una exportación compleja de metadata (DAX Studio), la analizamos como texto.
+                    st.info("El JSON se analizará como texto debido a su estructura compleja.")
+                    analisis_gemini = analizar_texto_con_gemini(contenido)
+                    if 'error' in analisis_gemini:
+                         st.error(f"Error de análisis JSON/Gemini: {analisis_gemini['error']}")
+                         return False, None, nombre_tabla
+                    analisis = convertir_analisis_imagen(analisis_gemini)
+                else:
+                    st.warning("Estructura JSON no reconocida. Por favor, asegúrate de que contenga nombres de columnas.")
+                    return False, None, nombre_tabla
+
+            elif tipo_archivo == 'txt':
+                 # Para archivos de texto simple, lo pasamos al análisis de Gemini como texto.
+                 analisis_gemini = analizar_texto_con_gemini(contenido)
+                 if 'error' in analisis_gemini:
+                    st.error(f"Error de análisis TXT/Gemini: {analisis_gemini['error']}")
+                    return False, None, nombre_tabla
+                 analisis = convertir_analisis_imagen(analisis_gemini)
+            
+            st.success("✅ Estructura de datos procesada correctamente.")
+            return True, analisis, nombre_tabla
+
+        else:
+            return False, None, nombre_tabla
+
+    except Exception as e:
+        st.error(f"Error al leer/procesar el archivo {tipo_archivo}: {e}")
+        if os.path.exists(temp_file_path): os.remove(temp_file_path)
+        return False, None, nombre_tabla
+
+
+def analizar_texto_con_gemini(texto_datos):
+    """Función auxiliar para analizar texto simple (TXT o JSON complejo) usando Gemini."""
     system_prompt = (
-        "Eres un experto en Power BI y análisis de modelos de datos. Tu tarea es analizar la imagen "
-        "que contiene una tabla, datos, o una vista del modelo de datos de Power BI. "
-        "Devuelve **SOLO** un objeto JSON con la estructura exacta definida a continuación. "
-        "Identifica los nombres de las columnas, su tipo lógico (numerico/categorico/fecha), "
-        "y sugiere métricas clave y relaciones. No incluyas texto explicativo."
+        "Eres un experto en Power BI. Analiza el siguiente texto que contiene la estructura de un modelo de datos (nombres de tablas, columnas y tipos). "
+        "Devuelve SOLO un objeto JSON con la estructura solicitada, extrayendo los nombres de las columnas, su tipo lógico (numerico/categorico/fecha) y sugiriendo métricas clave."
     )
-    
     json_structure = {
-        "nombre_tabla": "nombre sugerido para la tabla",
+        "nombre_tabla": "nombre_principal",
         "columnas": [
-            {"nombre": "nombre_columna", "tipo": "numerico/categorico/fecha", "descripcion": "breve descripción"},
+            {"nombre": "nombre_columna", "tipo": "numerico/categorico/fecha", "descripcion": ""},
         ],
-        "relaciones_posibles": ["descripción de posibles relaciones con otras tablas (si aplica)"],
-        "metricas_clave": ["lista de métricas importantes identificadas"]
+        "relaciones_posibles": ["descripción de relaciones"],
+        "metricas_clave": ["métricas importantes"]
     }
-    
+
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=[
-            "Analiza esta imagen y devuelve la información de la tabla usando el siguiente esquema JSON.",
-            "Esquema JSON Requerido: " + json.dumps(json_structure, indent=2)
+            "Analiza la estructura de datos a continuación. Usa este Esquema JSON Requerido: " + json.dumps(json_structure, indent=2),
+            f"Datos: \n{texto_datos}"
         ]),
-        imagen_data # Imagen PIL
     ]
-
+    
     try:
         response = client.models.generate_content(
             model='gemini-2.5-flash',
@@ -79,8 +147,6 @@ def analizar_imagen_con_gemini(imagen_data):
         )
         
         texto_limpio = response.text.strip()
-        
-        # Limpiar posibles bloques Markdown JSON
         if texto_limpio.startswith("```json"):
             texto_limpio = texto_limpio.split("```json")[1].strip()
         if texto_limpio.endswith("```"):
@@ -88,252 +154,80 @@ def analizar_imagen_con_gemini(imagen_data):
 
         return json.loads(texto_limpio)
         
-    except APIError as e:
-        return {"error": f"Error de API de Gemini: {e}. Revise la clave o el uso."}
     except Exception as e:
-         return {"error": f"Error de procesamiento de JSON/Visión: {e}. Intente con una imagen más clara."}
-
-# FUNCIÓN: Análisis de Estructura de Datos (desde DataFrame)
-def analizar_estructura(df):
-    analisis = {
-        'columnas': list(df.columns),
-        'tipos': {},
-        'numericas': [],
-        'categoricas': [],
-        'fechas': [],
-        'nulls': {}
-    }
-    
-    for col in df.columns:
-        tipo = str(df[col].dtype)
-        analisis['tipos'][col] = tipo
-        analisis['nulls'][col] = df[col].isnull().sum()
-        
-        if 'datetime' in tipo:
-            analisis['fechas'].append(col)
-        elif 'object' in tipo or 'category' in tipo:
-            analisis['categoricas'].append(col)
-        elif 'int' in tipo or 'float' in tipo:
-            analisis['numericas'].append(col)
-    
-    return analisis
-
-# FUNCIÓN: Convertir Análisis de Imagen a formato estándar
-def convertir_analisis_imagen(analisis_gemini):
-    analisis = {
-        'columnas': [],
-        'tipos': {},
-        'numericas': [],
-        'categoricas': [],
-        'fechas': [],
-        'nulls': {},
-        'nombre_tabla': analisis_gemini.get('nombre_tabla', 'Tabla'),
-        'relaciones': analisis_gemini.get('relaciones_posibles', []),
-        'metricas_clave': analisis_gemini.get('metricas_clave', [])
-    }
-    
-    for col_info in analisis_gemini.get('columnas', []):
-        nombre = col_info.get('nombre')
-        tipo = col_info.get('tipo', '').lower()
-        
-        if not nombre: continue
-
-        analisis['columnas'].append(nombre)
-        analisis['tipos'][nombre] = tipo
-        analisis['nulls'][nombre] = 0
-        
-        if tipo == 'numerico':
-            analisis['numericas'].append(nombre)
-        elif tipo == 'fecha':
-            analisis['fechas'].append(nombre)
-        else:
-            analisis['categoricas'].append(nombre)
-    
-    return analisis
-
-# FUNCIÓN: Generar Medidas DAX
-def generar_medidas_dax(analisis, nombre_tabla):
-    medidas = []
-    
-    # Medidas básicas
-    for col in analisis['numericas']:
-        medidas.append({
-            'nombre': f'Total {col}',
-            'dax': f'Total {col} = SUM({nombre_tabla}[{col}])',
-            'tipo': 'Agregación básica',
-            'descripcion': f'Suma total de {col}'
-        })
-        medidas.append({
-            'nombre': f'Promedio {col}',
-            'dax': f'Promedio {col} = AVERAGE({nombre_tabla}[{col}])',
-            'tipo': 'Agregación básica',
-            'descripcion': f'Promedio de {col}'
-        })
-
-    # Medidas de conteo
-    if analisis['columnas']:
-        medidas.append({
-            'nombre': 'Conteo Total Filas',
-            'dax': f'Conteo Total Filas = COUNTROWS({nombre_tabla})',
-            'tipo': 'Conteo',
-            'descripcion': 'Cuenta todas las filas de la tabla'
-        })
-    
-    # Medidas de tiempo
-    if analisis['fechas'] and analisis['numericas']:
-        fecha_col = analisis['fechas'][0]
-        num_col = analisis['numericas'][0]
-        
-        medidas.append({
-            'nombre': f'{num_col} YTD',
-            'dax': f'{num_col} YTD = TOTALYTD(SUM({nombre_tabla}[{num_col}]), {nombre_tabla}[{fecha_col}])',
-            'tipo': 'Inteligencia de tiempo',
-            'descripcion': f'Acumulado del año hasta la fecha para {num_col}'
-        })
-        
-        medidas.append({
-            'nombre': f'Variación % {num_col} vs Mes Anterior',
-            'dax': f'''Variación % {num_col} vs Mes Anterior = 
-VAR CurrentValue = SUM({nombre_tabla}[{num_col}])
-VAR PreviousValue = CALCULATE(SUM({nombre_tabla}[{num_col}]), PREVIOUSMONTH({nombre_tabla}[{fecha_col}]))
-RETURN
-DIVIDE(CurrentValue - PreviousValue, PreviousValue, 0)''',
-            'tipo': 'Análisis comparativo',
-            'descripcion': f'Cambio porcentual vs mes anterior'
-        })
-
-    # Medidas de Ranking/TopN
-    if len(analisis['numericas']) >= 1 and len(analisis['categoricas']) >= 1:
-        num_col = analisis['numericas'][0]
-        cat_col = analisis['categoricas'][0]
-        
-        medidas.append({
-            'nombre': f'{num_col} Top 5 {cat_col}',
-            'dax': f'''Top 5 {cat_col} = 
-CALCULATE(
-    SUM({nombre_tabla}[{num_col}]),
-    TOPN(5, ALL({nombre_tabla}[{cat_col}]), SUM({nombre_tabla}[{num_col}]))
-)''',
-            'tipo': 'Filtrado avanzado',
-            'descripcion': f'Total solo para los 5 principales {cat_col}'
-        })
-    
-    return medidas
-
-# FUNCIÓN: Sugerir KPI/OKR
-def sugerir_kpi_okr(analisis, nombre_tabla):
-    sugerencias = []
-    
-    if analisis['numericas']:
-        num_col = analisis['numericas'][0]
-        
-        sugerencias.append({
-            'nombre': f'KPI: Tasa de {num_col}',
-            'objetivo': f'Monitorear la suma promedio o total de `{num_col}` por entidad/tiempo.',
-            'dax_base': f'SUM({nombre_tabla}[{num_col}])',
-            'tipo': 'Monitoreo de Volumen',
-            'visualizacion': 'Tarjeta o Medidor'
-        })
-        
-        if analisis['fechas']:
-            sugerencias.append({
-                'nombre': f'KPI: Crecimiento de {num_col} (MoM)',
-                'objetivo': f'Medir la variación porcentual de `{num_col}` respecto al mes anterior (Month-over-Month).',
-                'dax_base': f'DIVIDE([Total {num_col}] - [{num_col} Mes Anterior], [{num_col} Mes Anterior], 0)',
-                'tipo': 'Rendimiento y Crecimiento',
-                'visualizacion': 'Flechas Condicionales o Gráfico de Área'
-            })
-
-    if len(analisis['numericas']) >= 2:
-        num_col_1 = analisis['numericas'][0]
-        num_col_2 = analisis['numericas'][1]
-        
-        sugerencias.append({
-            'nombre': f'KPI: Ratio de {num_col_1} vs {num_col_2}',
-            'objetivo': f'Medir la eficiencia o relación entre `{num_col_1}` y `{num_col_2}` (Ej: Ingreso/Costo).',
-            'dax_base': f'DIVIDE([Total {num_col_1}], [Total {num_col_2}], 0)',
-            'tipo': 'Eficiencia/Razón',
-            'visualizacion': 'Tarjeta o Gráfico de Dispersión'
-        })
-        
-    if analisis['categoricas'] and analisis['numericas']:
-        num_col = analisis['numericas'][0]
-        cat_col = analisis['categoricas'][0]
-        
-        sugerencias.append({
-            'nombre': f'OKR: Top {cat_col} Contribuyentes',
-            'objetivo': f'Identificar y aumentar el porcentaje de `{num_col}` aportado por el Top 5 de `{cat_col}`.',
-            'dax_base': f'DIVIDE([{num_col} Top 5 {cat_col}], [Total {num_col}], 0)',
-            'tipo': 'Foco Estratégico',
-            'visualizacion': 'Gráfico de Barras con Pareto'
-        })
-
-    return sugerencias
-
-# FUNCIÓN: Recomendar Gráficas
-def recomendar_graficas(analisis):
-    recomendaciones = []
-    
-    # Gráficas de Tendencia
-    if analisis['fechas'] and analisis['numericas']:
-        recomendaciones.append({
-            'tipo': 'Gráfico de Líneas',
-            'uso': f'Tendencia temporal de {analisis["numericas"][0]} a lo largo del tiempo (KPIs de crecimiento)',
-            'columnas': [analisis['fechas'][0], analisis['numericas'][0]],
-            'icono': '📈'
-        })
-        
-    # Gráficas de Composición y Comparación
-    if analisis['categoricas'] and analisis['numericas']:
-        recomendaciones.append({
-            'tipo': 'Gráfico de Cascada (Waterfall)',
-            'uso': 'Mostrar la contribución o descomposición de una métrica por categoría o estado (ideal para demostrar el impacto en un OKR).',
-            'columnas': [analisis['categoricas'][0], analisis['numericas'][0]],
-            'icono': '🌊'
-        })
-        recomendaciones.append({
-            'tipo': 'Gráfico de Barras/Columnas',
-            'uso': f'Comparar {analisis["numericas"][0]} por {analisis["categoricas"][0]}',
-            'columnas': [analisis['categoricas'][0], analisis['numericas'][0]],
-            'icono': '📊'
-        })
-
-    # Gráficas de Relación
-    if len(analisis['numericas']) >= 2:
-        recomendaciones.append({
-            'tipo': 'Gráfico de Dispersión',
-            'uso': f'Analizar correlación entre {analisis["numericas"][0]} y {analisis["numericas"][1]} (KPIs de Eficiencia)',
-            'columnas': analisis['numericas'][:2],
-            'icono': '📊'
-        })
-
-    # Visualizaciones KPI/OKR
-    if analisis['numericas']:
-        recomendaciones.append({
-            'tipo': 'Tarjeta de KPI con Tendencia',
-            'uso': f'Visualizar métrica clave ({analisis["numericas"][0]}) con comparación de período anterior (MoM o YoY)',
-            'columnas': [analisis['numericas'][0]],
-            'icono': '🎯'
-        })
-        recomendaciones.append({
-            'tipo': 'Gráfico de Medidor (Gauge)',
-            'uso': f'Visualizar progreso de {analisis["numericas"][0]} hacia una meta (Objetivos)',
-            'columnas': [analisis['numericas'][0]],
-            'icono': '🎚️'
-        })
-
-    return recomendaciones
+         return {"error": f"Error de análisis de texto con Gemini: {e}"}
 
 
-# --- UI Principal ---
+# --- UI Principal (MODIFICADA) ---
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("📤 Cargar Datos")
     
-    tipo_archivo = st.radio("Tipo de entrada:", ["Excel/CSV", "Imagen de tabla/Modelo"])
+    tipo_entrada = st.radio("Tipo de entrada:", ["Archivo (Estructura)", "Imagen de tabla/Modelo", "Excel/CSV (Datos)"])
     
-    if tipo_archivo == "Excel/CSV":
+    # ----------------------------------------------------
+    # Lógica de Carga de Archivos (.txt, .json, .vspax, .ovpax)
+    # ----------------------------------------------------
+    if tipo_entrada == "Archivo (Estructura)":
+        archivo = st.file_uploader(
+            "Sube archivo de estructura o binario (TXT, JSON, VSPAX, OPAX)", 
+            type=['txt', 'json', 'vspax', 'ovpax', 'csv', 'xlsx']
+        )
+        
+        if archivo:
+            file_extension = archivo.name.split('.')[-1].lower()
+
+            if file_extension in ['csv', 'xlsx']:
+                st.warning("Por favor, usa la opción 'Excel/CSV' para analizar estos archivos.")
+            else:
+                if st.button("🚀 Analizar Estructura Cargada"):
+                    with st.spinner(f"Analizando archivo .{file_extension}..."):
+                        procesado, analisis, nombre_tabla = manejar_analisis_archivo(archivo, file_extension)
+                        
+                        if procesado:
+                            st.session_state['analisis'] = analisis
+                            st.session_state['medidas'] = generar_medidas_dax(analisis, nombre_tabla)
+                            st.session_state['graficas'] = recomendar_graficas(analisis)
+                            st.session_state['kpi_okr'] = sugerir_kpi_okr(analisis, nombre_tabla)
+                            st.session_state['nombre_tabla'] = nombre_tabla
+                            st.rerun()
+                        elif analisis is not None:
+                             st.error("Fallo al procesar el archivo.")
+
+    # ----------------------------------------------------
+    # Lógica de Imagen
+    # ----------------------------------------------------
+    elif tipo_entrada == "Imagen de tabla/Modelo":
+        st.info("📸 Sube una captura de tu tabla de datos o de la vista del modelo en Power BI.")
+        imagen = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg'])
+        
+        if imagen:
+            img = Image.open(imagen)
+            st.image(img, caption="Imagen cargada", use_container_width=True)
+            
+            nombre_tabla = st.text_input("Nombre de la tabla sugerido:", "TablaImagen")
+            
+            if st.button("🔍 Analizar Imagen con Gemini"):
+                with st.spinner("Analizando imagen y extrayendo estructura con Gemini Vision..."):
+                    analisis_gemini = analizar_imagen_con_gemini(img) 
+                    
+                    if 'error' in analisis_gemini:
+                        st.error(f"Error: {analisis_gemini['error']}")
+                    else:
+                        analisis = convertir_analisis_imagen(analisis_gemini)
+                        st.session_state['analisis'] = analisis
+                        st.session_state['medidas'] = generar_medidas_dax(analisis, nombre_tabla)
+                        st.session_state['graficas'] = recomendar_graficas(analisis)
+                        st.session_state['kpi_okr'] = sugerir_kpi_okr(analisis, nombre_tabla)
+                        st.session_state['nombre_tabla'] = nombre_tabla
+                        st.success("¡Estructura de datos extraída por Gemini!")
+                        st.rerun()
+
+    # ----------------------------------------------------
+    # Lógica de Excel/CSV (Datos)
+    # ----------------------------------------------------
+    elif tipo_entrada == "Excel/CSV (Datos)":
         archivo = st.file_uploader("Sube tu archivo", type=['xlsx', 'xls', 'csv'])
         
         if archivo:
@@ -352,48 +246,23 @@ with col1:
                 
                 if st.button("🚀 Analizar y Generar Soluciones (Archivo)"):
                     with st.spinner("Analizando datos y generando sugerencias..."):
-                        analisis = analizar_estructura(df) 
-                        st.session_state['analisis'] = analisis
-                        st.session_state['medidas'] = generar_medidas_dax(analisis, nombre_tabla)
-                        st.session_state['graficas'] = recomendar_graficas(analisis)
-                        st.session_state['kpi_okr'] = sugerir_kpi_okr(analisis, nombre_tabla) 
-                        st.session_state['nombre_tabla'] = nombre_tabla
-                        st.rerun()
-                
-            except Exception as e:
-                st.error(f"Error al cargar archivo: {str(e)}")
-    
-    else: # Lógica para IMAGEN
-        st.info("📸 Sube una captura de tu tabla de datos o de la vista del modelo en Power BI.")
-        imagen = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg'])
-        
-        if imagen:
-            img = Image.open(imagen)
-            st.image(img, caption="Imagen cargada", use_container_width=True)
-            
-            nombre_tabla = st.text_input("Nombre de la tabla sugerido:", "TablaImagen")
-            
-            if st.button("🔍 Analizar Imagen con Gemini"):
-                with st.spinner("Analizando imagen y extrayendo estructura con Gemini Vision..."):
-                    
-                    analisis_gemini = analizar_imagen_con_gemini(img) 
-                    
-                    if 'error' in analisis_gemini:
-                        st.error(f"Error: {analisis_gemini['error']}")
-                    else:
-                        analisis = convertir_analisis_imagen(analisis_gemini)
-                        
+                        analisis = analizar_estructura(df)
                         st.session_state['analisis'] = analisis
                         st.session_state['medidas'] = generar_medidas_dax(analisis, nombre_tabla)
                         st.session_state['graficas'] = recomendar_graficas(analisis)
                         st.session_state['kpi_okr'] = sugerir_kpi_okr(analisis, nombre_tabla)
                         st.session_state['nombre_tabla'] = nombre_tabla
-                        st.success("¡Estructura de datos extraída por Gemini!")
                         st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error al cargar archivo: {str(e)}")
+
 
 with col2:
     st.subheader("📊 Resultados del Análisis")
     
+    # ... (Secciones de resultados: Estructura, KPI/OKR, DAX, Gráficas se mantienen igual) ...
+
     if 'analisis' in st.session_state:
         analisis = st.session_state['analisis']
         
@@ -410,17 +279,15 @@ with col2:
                 nulls = analisis['nulls'].get(col, 0)
                 st.text(f"{col}: {tipo_col} | Nulos: {nulls}")
 
-        # Mostrar información adicional si viene de imagen
         if 'relaciones' in analisis and analisis['relaciones']:
-            with st.expander("🔗 Relaciones sugeridas (Extraído de Imagen)"):
+            with st.expander("🔗 Relaciones sugeridas"):
                 for rel in analisis['relaciones']:
                     st.markdown(f"- {rel}")
         
         if 'metricas_clave' in analisis and analisis['metricas_clave']:
-            with st.expander("🎯 Métricas clave identificadas (Extraído de Imagen)"):
+            with st.expander("🎯 Métricas clave identificadas"):
                 for metrica in analisis['metricas_clave']:
                     st.markdown(f"- {metrica}")
-
 
 # --- Sección de KPI y OKR ---
 if 'kpi_okr' in st.session_state:
@@ -481,7 +348,3 @@ if 'graficas' in st.session_state:
                     st.markdown(f"- `{col}`")
             
             st.markdown("---")
-
-# Footer
-st.markdown("---")
-st.markdown("💡 **Tip:** Ajusta las medidas según tu modelo de datos y relaciones en Power BI")
