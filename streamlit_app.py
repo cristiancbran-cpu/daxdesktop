@@ -38,9 +38,9 @@ except Exception as e:
     st.error(f"Error al inicializar el cliente de Gemini: {e}")
     st.stop()
 
-# --- Funciones de Análisis (RESTAURADA la función faltante) ---
+# --- Funciones de Análisis ---
 
-# FUNCIÓN: Análisis de Estructura de Datos (desde DataFrame)
+# FUNCIÓN RESTAURADA: Análisis de Estructura de Datos (desde DataFrame)
 def analizar_estructura(df):
     """ Función que analiza un DataFrame para extraer tipos de columnas. """
     analisis = {
@@ -68,7 +68,6 @@ def analizar_estructura(df):
 
 
 # FUNCIÓN: Análisis de Imagen con Gemini Vision
-# (El código de analizar_imagen_con_gemini se mantiene igual)
 def analizar_imagen_con_gemini(imagen_data):
     system_prompt = (
         "Eres un experto en Power BI y análisis de modelos de datos. Tu tarea es analizar la imagen "
@@ -119,7 +118,6 @@ def analizar_imagen_con_gemini(imagen_data):
 
 # FUNCIÓN: Convertir Análisis de Imagen a formato estándar
 def convertir_analisis_imagen(analisis_gemini):
-    # ... (código sin cambios) ...
     analisis = {
         'columnas': [],
         'tipos': {},
@@ -182,7 +180,6 @@ def manejar_analisis_archivo(archivo, tipo_archivo):
             if tipo_archivo == 'json':
                 data = json.loads(contenido)
                 
-                # ... (lógica de análisis JSON/TXT/Gemini sin cambios) ...
                 if isinstance(data, dict) and 'columnas' in data:
                     analisis = convertir_analisis_imagen(data)
                 elif isinstance(data, list) and data and 'name' in data[0]: 
@@ -257,17 +254,181 @@ def analizar_texto_con_gemini(texto_datos):
     except Exception as e:
          return {"error": f"Error de análisis de texto con Gemini: {e}"}
 
-# --- Lógica de Generación DAX, KPI y Gráficas (sin cambios) ---
-# (Las funciones generar_medidas_dax, sugerir_kpi_okr, recomendar_graficas se mantienen igual)
+# --- Lógica de Generación DAX, KPI y Gráficas (sin cambios, solo las funciones) ---
+
+# FUNCIÓN: Generar Medidas DAX
+def generar_medidas_dax(analisis, nombre_tabla):
+    medidas = []
+    
+    for col in analisis['numericas']:
+        medidas.append({
+            'nombre': f'Total {col}',
+            'dax': f'Total {col} = SUM({nombre_tabla}[{col}])',
+            'tipo': 'Agregación básica',
+            'descripcion': f'Suma total de {col}'
+        })
+        medidas.append({
+            'nombre': f'Promedio {col}',
+            'dax': f'Promedio {col} = AVERAGE({nombre_tabla}[{col}])',
+            'tipo': 'Agregación básica',
+            'descripcion': f'Promedio de {col}'
+        })
+
+    if analisis['columnas']:
+        medidas.append({
+            'nombre': 'Conteo Total Filas',
+            'dax': f'Conteo Total Filas = COUNTROWS({nombre_tabla})',
+            'tipo': 'Conteo',
+            'descripcion': 'Cuenta todas las filas de la tabla'
+        })
+    
+    if analisis['fechas'] and analisis['numericas']:
+        fecha_col = analisis['fechas'][0]
+        num_col = analisis['numericas'][0]
+        
+        medidas.append({
+            'nombre': f'{num_col} YTD',
+            'dax': f'{num_col} YTD = TOTALYTD(SUM({nombre_tabla}[{num_col}]), {nombre_tabla}[{fecha_col}])',
+            'tipo': 'Inteligencia de tiempo',
+            'descripcion': f'Acumulado del año hasta la fecha para {num_col}'
+        })
+        
+        medidas.append({
+            'nombre': f'Variación % {num_col} vs Mes Anterior',
+            'dax': f'''Variación % {num_col} vs Mes Anterior = 
+VAR CurrentValue = SUM({nombre_tabla}[{num_col}])
+VAR PreviousValue = CALCULATE(SUM({nombre_tabla}[{num_col}]), PREVIOUSMONTH({nombre_tabla}[{fecha_col}]))
+RETURN
+DIVIDE(CurrentValue - PreviousValue, PreviousValue, 0)''',
+            'tipo': 'Análisis comparativo',
+            'descripcion': f'Cambio porcentual vs mes anterior'
+        })
+
+    if len(analisis['numericas']) >= 1 and len(analisis['categoricas']) >= 1:
+        num_col = analisis['numericas'][0]
+        cat_col = analisis['categoricas'][0]
+        
+        medidas.append({
+            'nombre': f'{num_col} Top 5 {cat_col}',
+            'dax': f'''Top 5 {cat_col} = 
+CALCULATE(
+    SUM({nombre_tabla}[{num_col}]),
+    TOPN(5, ALL({nombre_tabla}[{cat_col}]), SUM({nombre_tabla}[{num_col}]))
+)''',
+            'tipo': 'Filtrado avanzado',
+            'descripcion': f'Total solo para los 5 principales {cat_col}'
+        })
+    
+    return medidas
+
+# FUNCIÓN: Sugerir KPI/OKR
+def sugerir_kpi_okr(analisis, nombre_tabla):
+    sugerencias = []
+    
+    if analisis['numericas']:
+        num_col = analisis['numericas'][0]
+        
+        sugerencias.append({
+            'nombre': f'KPI: Tasa de {num_col}',
+            'objetivo': f'Monitorear la suma promedio o total de `{num_col}` por entidad/tiempo.',
+            'dax_base': f'SUM({nombre_tabla}[{num_col}])',
+            'tipo': 'Monitoreo de Volumen',
+            'visualizacion': 'Tarjeta o Medidor'
+        })
+        
+        if analisis['fechas']:
+            sugerencias.append({
+                'nombre': f'KPI: Crecimiento de {num_col} (MoM)',
+                'objetivo': f'Medir la variación porcentual de `{num_col}` respecto al mes anterior (Month-over-Month).',
+                'dax_base': f'DIVIDE([Total {num_col}] - [{num_col} Mes Anterior], [{num_col} Mes Anterior], 0)',
+                'tipo': 'Rendimiento y Crecimiento',
+                'visualizacion': 'Flechas Condicionales o Gráfico de Área'
+            })
+
+    if len(analisis['numericas']) >= 2:
+        num_col_1 = analisis['numericas'][0]
+        num_col_2 = analisis['numericas'][1]
+        
+        sugerencias.append({
+            'nombre': f'KPI: Ratio de {num_col_1} vs {num_col_2}',
+            'objetivo': f'Medir la eficiencia o relación entre `{num_col_1}` y `{num_col_2}` (Ej: Ingreso/Costo).',
+            'dax_base': f'DIVIDE([Total {num_col_1}], [Total {num_col_2}], 0)',
+            'tipo': 'Eficiencia/Razón',
+            'visualizacion': 'Tarjeta o Gráfico de Dispersión'
+        })
+        
+    if analisis['categoricas'] and analisis['numericas']:
+        num_col = analisis['numericas'][0]
+        cat_col = analisis['categoricas'][0]
+        
+        sugerencias.append({
+            'nombre': f'OKR: Top {cat_col} Contribuyentes',
+            'objetivo': f'Identificar y aumentar el porcentaje de `{num_col}` aportado por el Top 5 de `{cat_col}`.',
+            'dax_base': f'DIVIDE([{num_col} Top 5 {cat_col}], [Total {num_col}], 0)',
+            'tipo': 'Foco Estratégico',
+            'visualizacion': 'Gráfico de Barras con Pareto'
+        })
+
+    return sugerencias
+
+# FUNCIÓN: Recomendar Gráficas
+def recomendar_graficas(analisis):
+    recomendaciones = []
+    
+    if analisis['fechas'] and analisis['numericas']:
+        recomendaciones.append({
+            'tipo': 'Gráfico de Líneas',
+            'uso': f'Tendencia temporal de {analisis["numericas"][0]} a lo largo del tiempo (KPIs de crecimiento)',
+            'columnas': [analisis['fechas'][0], analisis['numericas'][0]],
+            'icono': '📈'
+        })
+        
+    if analisis['categoricas'] and analisis['numericas']:
+        recomendaciones.append({
+            'tipo': 'Gráfico de Cascada (Waterfall)',
+            'uso': 'Mostrar la contribución o descomposición de una métrica por categoría o estado (ideal para demostrar el impacto en un OKR).',
+            'columnas': [analisis['categoricas'][0], analisis['numericas'][0]],
+            'icono': '🌊'
+        })
+        recomendaciones.append({
+            'tipo': 'Gráfico de Barras/Columnas',
+            'uso': f'Comparar {analisis["numericas"][0]} por {analisis["categoricas"][0]}',
+            'columnas': [analisis['categoricas'][0], analisis['numericas'][0]],
+            'icono': '📊'
+        })
+        
+    if len(analisis['numericas']) >= 2:
+        recomendaciones.append({
+            'tipo': 'Gráfico de Dispersión',
+            'uso': f'Analizar correlación entre {analisis["numericas"][0]} y {analisis["numericas"][1]} (KPIs de Eficiencia)',
+            'columnas': analisis['numericas'][:2],
+            'icono': '📊'
+        })
+
+    if analisis['numericas']:
+        recomendaciones.append({
+            'tipo': 'Tarjeta de KPI con Tendencia',
+            'uso': f'Visualizar métrica clave ({analisis["numericas"][0]}) con comparación de período anterior (MoM o YoY)',
+            'columnas': [analisis['numericas'][0]],
+            'icono': '🎯'
+        })
+        recomendaciones.append({
+            'tipo': 'Gráfico de Medidor (Gauge)',
+            'uso': f'Visualizar progreso de {analisis["numericas"][0]} hacia una meta (Objetivos)',
+            'columnas': [analisis['numericas'][0]],
+            'icono': '🎚️'
+        })
+
+    return recomendaciones
 
 
-# --- UI Principal (MODIFICADA) ---
+# --- UI Principal ---
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("📤 Cargar Datos")
     
-    # Separación de Entradas
+    # Separación de Entradas (CORREGIDO)
     tipo_entrada = st.radio(
         "Tipo de entrada:", 
         ["1. Excel/CSV (Datos)", "2. Archivo (Estructura)", "3. Imagen (Visión)"]
@@ -295,7 +456,7 @@ with col1:
                 
                 if st.button("🚀 Analizar y Generar Soluciones"):
                     with st.spinner("Analizando datos y generando sugerencias..."):
-                        analisis = analizar_estructura(df) # <-- FUNCIÓN RESTAURADA
+                        analisis = analizar_estructura(df) 
                         st.session_state['analisis'] = analisis
                         st.session_state['medidas'] = generar_medidas_dax(analisis, nombre_tabla)
                         st.session_state['graficas'] = recomendar_graficas(analisis)
@@ -366,8 +527,6 @@ with col1:
 with col2:
     st.subheader("📊 Resultados del Análisis")
     
-    # ... (El resto del código de resultados se mantiene igual) ...
-
     if 'analisis' in st.session_state:
         analisis = st.session_state['analisis']
         
@@ -394,12 +553,67 @@ with col2:
                 for metrica in analisis['metricas_clave']:
                     st.markdown(f"- {metrica}")
 
-# --- Secciones de Salida (KPI/DAX/Gráficas) (Sin cambios) ---
+
+# --- Sección de KPI y OKR ---
 if 'kpi_okr' in st.session_state:
-# ... (código KPI/OKR) ...
+    st.markdown("---")
+    st.markdown("## 🎯 Sugerencias de KPI y OKR")
+    
+    for sugerencia in st.session_state['kpi_okr']:
+        with st.expander(f"🏅 {sugerencia['nombre']} ({sugerencia['tipo']})"):
+            st.markdown(f"**Objetivo/Enfoque:** {sugerencia['objetivo']}")
+            st.markdown(f"**Medida DAX base:**")
+            st.code(sugerencia['dax_base'], language='dax')
+            st.markdown(f"**Visualización Clave:** {sugerencia['visualizacion']}")
 
-if 'medidas' in st.session_state:
-# ... (código Medidas DAX) ...
+# --- Sección de Medidas DAX ---
+if 'medidas' in st.session_state: # <-- CORREGIDO: Inicio del bloque
+    st.markdown("---") # <-- CORREGIDO: Asegurar la indentación de esta línea
+    st.markdown("## 📐 Medidas DAX Detalladas")
+    
+    medidas = st.session_state['medidas']
+    
+    tipos = list(set([m['tipo'] for m in medidas]))
+    tipo_filtro = st.multiselect("Filtrar por tipo de medida:", tipos, default=tipos)
+    
+    medidas_filtradas = [m for m in medidas if m['tipo'] in tipo_filtro]
+    
+    if st.button("📥 Descargar medidas DAX filtradas"):
+        contenido = "\n\n".join([f"// {m['nombre']}\n// {m['descripcion']}\n{m['dax']}" for m in medidas_filtradas])
+        st.download_button(
+            label="💾 Descargar archivo DAX",
+            data=contenido,
+            file_name=f"medidas_dax_{st.session_state.get('nombre_tabla', 'tabla')}.txt",
+            mime="text/plain"
+        )
+    
+    for i, medida in enumerate(medidas_filtradas):
+        with st.expander(f"📊 {medida['nombre']} ({medida['tipo']})"):
+            st.markdown(f"**Descripción:** {medida.get('descripcion', 'N/A')}")
+            st.code(medida['dax'], language='dax')
 
+# --- Sección de Gráficas Recomendadas ---
 if 'graficas' in st.session_state:
-# ... (código Gráficas) ...
+    st.markdown("---")
+    st.markdown("## 📈 Gráficas Recomendadas")
+    
+    graficas = st.session_state['graficas']
+    
+    for grafica in graficas:
+        with st.container():
+            col_g1, col_g2 = st.columns([2, 3])
+            
+            with col_g1:
+                st.markdown(f"### {grafica.get('icono', '📊')} {grafica['tipo']}")
+                st.markdown(f"**Uso:** {grafica['uso']}")
+            
+            with col_g2:
+                st.markdown("**Columnas sugeridas:**")
+                for col in grafica['columnas']:
+                    st.markdown(f"- `{col}`")
+            
+            st.markdown("---")
+
+# Footer
+st.markdown("---")
+st.markdown("💡 **Tip:** Ajusta las medidas según tu modelo de datos y relaciones en Power BI")
