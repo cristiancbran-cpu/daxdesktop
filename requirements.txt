@@ -7,3 +7,5 @@ requests==2.31.0
 langchain-core==0.1.25
 google-genai
 Pillow
+python-dotenv
+tiktoken
