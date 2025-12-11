@@ -503,7 +503,7 @@ with col1:
             # CORRECCIÓN DE ERROR: Usar st.stop() en lugar de return
             try:
                 img = Image.open(imagen_cargada)
-                st.image(img, caption="Imagen cargada", use_container_width=True)
+                st.image(img, caption="Imagen cargada", width=300)
             except Exception as e:
                 st.error(f"Error al procesar la imagen: {e}")
                 st.stop() # <-- SOLUCION AL SYNTAXERROR
