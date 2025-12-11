@@ -254,8 +254,6 @@ def analizar_texto_con_gemini(texto_datos):
     except Exception as e:
          return {"error": f"Error de análisis de texto con Gemini: {e}"}
 
-# --- Lógica de Generación DAX, KPI y Gráficas (sin cambios, solo las funciones) ---
-
 # FUNCIÓN: Generar Medidas DAX
 def generar_medidas_dax(analisis, nombre_tabla):
     medidas = []
@@ -428,7 +426,7 @@ col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("📤 Cargar Datos")
     
-    # Separación de Entradas (CORREGIDO)
+    # Separación de Entradas
     tipo_entrada = st.radio(
         "Tipo de entrada:", 
         ["1. Excel/CSV (Datos)", "2. Archivo (Estructura)", "3. Imagen (Visión)"]
@@ -499,16 +497,22 @@ with col1:
     # ----------------------------------------------------
     elif tipo_entrada == "3. Imagen (Visión)":
         st.info("📸 Sube una captura de tu tabla de datos o de la vista del modelo en Power BI.")
-        imagen = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg'])
+        imagen_cargada = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg']) # <-- Variable corregida
         
-        if imagen:
-            img = Image.open(imagen)
-            st.image(img, caption="Imagen cargada", use_container_width=True)
-            
+        if imagen_cargada:
+            # CORRECCIÓN: Manejo defensivo de la imagen cargada
+            try:
+                img = Image.open(imagen_cargada)
+                st.image(img, caption="Imagen cargada", use_container_width=True)
+            except Exception as e:
+                st.error(f"Error al procesar la imagen: {e}")
+                return # Detener la ejecución si la imagen no se abre
+
             nombre_tabla = st.text_input("Nombre de la tabla sugerido:", "TablaImagen")
             
             if st.button("🔍 Analizar Imagen con Gemini"):
                 with st.spinner("Analizando imagen y extrayendo estructura con Gemini Vision..."):
+                    
                     analisis_gemini = analizar_imagen_con_gemini(img) 
                     
                     if 'error' in analisis_gemini:
@@ -567,8 +571,8 @@ if 'kpi_okr' in st.session_state:
             st.markdown(f"**Visualización Clave:** {sugerencia['visualizacion']}")
 
 # --- Sección de Medidas DAX ---
-if 'medidas' in st.session_state: # <-- CORREGIDO: Inicio del bloque
-    st.markdown("---") # <-- CORREGIDO: Asegurar la indentación de esta línea
+if 'medidas' in st.session_state:
+    st.markdown("---")
     st.markdown("## 📐 Medidas DAX Detalladas")
     
     medidas = st.session_state['medidas']
