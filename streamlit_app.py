@@ -399,7 +399,7 @@ def recomendar_graficas(analisis):
         recomendaciones.append({
             'tipo': 'Gráfico de Dispersión',
             'uso': f'Analizar correlación entre {analisis["numericas"][0]} y {analisis["numericas"][1]} (KPIs de Eficiencia)',
-            'columnas': analisis['numericas'][:2],
+            'columnas': analisis["numericas"][:2],
             'icono': '📊'
         })
 
@@ -497,16 +497,16 @@ with col1:
     # ----------------------------------------------------
     elif tipo_entrada == "3. Imagen (Visión)":
         st.info("📸 Sube una captura de tu tabla de datos o de la vista del modelo en Power BI.")
-        imagen_cargada = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg']) # <-- Variable corregida
+        imagen_cargada = st.file_uploader("Sube imagen de tabla o modelo", type=['png', 'jpg', 'jpeg']) 
         
         if imagen_cargada:
-            # CORRECCIÓN: Manejo defensivo de la imagen cargada
+            # CORRECCIÓN DE ERROR: Usar st.stop() en lugar de return
             try:
                 img = Image.open(imagen_cargada)
                 st.image(img, caption="Imagen cargada", use_container_width=True)
             except Exception as e:
                 st.error(f"Error al procesar la imagen: {e}")
-                return # Detener la ejecución si la imagen no se abre
+                st.stop() # <-- SOLUCION AL SYNTAXERROR
 
             nombre_tabla = st.text_input("Nombre de la tabla sugerido:", "TablaImagen")
             
